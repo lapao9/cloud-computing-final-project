@@ -1,0 +1,117 @@
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+
+option java_multiple_files = true;
+option java_package = "cn2026.contract";
+
+package cn2026;
+
+// =====================================================================
+//  SF - Functional operations
+// =====================================================================
+service LabelsService {
+
+  // 1) Client streams image bytes; server stores the blob in Cloud
+  //    Storage and publishes a task message to Pub/Sub. The reply
+  //    carries the request id used in every subsequent operation.
+  rpc SubmitImage(stream ImageChunk) returns (SubmitResponse);
+
+  // 2) Given a requestId, return the labels + translations + processing
+  //    timestamp.  If the worker has not finished yet the reply has
+  //    completed=false.
+  rpc GetResult(RequestId) returns (LabelResult);
+
+  // 3) Return all filenames stored between two timestamps that contain
+  //    a given label (English or Portuguese, case-insensitive).
+  rpc QueryByLabel(LabelDateRange) returns (FileNames);
+
+  // 4) [Optional] Download an image previously uploaded - server streams
+  //    the bytes back. Useful for the demo of QueryByLabel.
+  rpc DownloadImage(RequestId) returns (stream ImageChunk);
+}
+
+// =====================================================================
+//  SG - Management / elasticity operations
+// =====================================================================
+service ScaleService {
+
+  // Resize the MIG hosting the gRPC servers
+  rpc ScaleGrpcServers(ScaleRequest) returns (ScaleResponse);
+
+  // Resize the MIG hosting the Labels-App workers
+  rpc ScaleLabelsApp(ScaleRequest) returns (ScaleResponse);
+
+  // Read the current size of each MIG (and the names of running VMs)
+  rpc GetStatus(google.protobuf.Empty) returns (StatusResponse);
+}
+
+// =====================================================================
+//  Messages
+// =====================================================================
+message ImageChunk {
+  // Sent only with the first chunk.  Subsequent chunks leave it empty.
+  string filename = 1;
+  // Raw bytes of this chunk of the image.
+  bytes  content  = 2;
+}
+
+message SubmitResponse {
+  string request_id = 1;
+  string blob_name  = 2;
+  string bucket     = 3;
+}
+
+message RequestId {
+  string request_id = 1;
+}
+
+message LabelEntry {
+  string label_en = 1;
+  string label_pt = 2;
+  float  score    = 3;
+}
+
+message LabelResult {
+  string request_id   = 1;
+  string filename     = 2;
+  // milliseconds since epoch; 0 when completed=false
+  int64  processed_at = 3;
+  repeated LabelEntry labels = 4;
+  // false while the worker has not yet finished
+  bool   completed    = 5;
+}
+
+message LabelDateRange {
+  // Label to search for (matched against label_en OR label_pt).
+  string label = 1;
+  // Inclusive lower bound (ms since epoch); 0 = no lower bound.
+  int64  start_epoch_millis = 2;
+  // Inclusive upper bound (ms since epoch); 0 = no upper bound.
+  int64  end_epoch_millis   = 3;
+}
+
+message FileNames {
+  repeated string filename = 1;
+}
+
+message ScaleRequest {
+  int32 target_size = 1;   // requested number of VMs (>=0)
+}
+
+message ScaleResponse {
+  bool   success     = 1;
+  string message     = 2;
+  int32  current_size = 3;
+}
+
+message MigInfo {
+  string mig_name      = 1;
+  int32  target_size   = 2;
+  repeated string instance_names = 3;
+}
+
+message StatusResponse {
+  MigInfo grpc_servers     = 1;
+  MigInfo labels_app       = 2;
+}
