@@ -1,0 +1,11 @@
+{
+  "name": "cn2026-pubsub-logger",
+  "version": "1.0.0",
+  "description": "Optional Pub/Sub-triggered logger of incoming image-processing requests",
+  "main": "index.js",
+  "engines": { "node": "20" },
+  "dependencies": {
+    "@google-cloud/firestore": "^7.10.0",
+    "@google-cloud/functions-framework": "^3.4.0"
+  }
+}

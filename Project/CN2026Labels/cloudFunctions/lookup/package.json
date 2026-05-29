@@ -1,0 +1,14 @@
+{
+  "name": "cn2026-lookup",
+  "version": "1.0.0",
+  "description": "Lookup Cloud Function - returns external IPs of the gRPC server MIG",
+  "main": "index.js",
+  "engines": { "node": "20" },
+  "scripts": {
+    "start": "functions-framework --target=lookup --port=8080"
+  },
+  "dependencies": {
+    "@google-cloud/compute": "^4.7.0",
+    "@google-cloud/functions-framework": "^3.4.0"
+  }
+}
