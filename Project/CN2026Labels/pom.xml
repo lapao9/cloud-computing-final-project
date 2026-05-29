@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>cn2026</groupId>
+    <artifactId>cn2026-labels-parent</artifactId>
+    <version>1.0</version>
+    <packaging>pom</packaging>
+
+    <name>CN2026Labels (parent)</name>
+    <description>Elastic image-labelling system on GCP (ISEL - Computacao na Nuvem 2025/2026)</description>
+
+    <modules>
+        <module>grpcContract</module>
+        <module>grpcServer</module>
+        <module>labelsApp</module>
+        <module>client</module>
+    </modules>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <java.version>17</java.version>
+        <maven.compiler.source>${java.version}</maven.compiler.source>
+        <maven.compiler.target>${java.version}</maven.compiler.target>
+
+        <grpc.version>1.79.0</grpc.version>
+        <protoc.version>4.28.3</protoc.version>
+        <protoc.grpc.plugin.version>1.70.0</protoc.grpc.plugin.version>
+
+        <gcp.storage.version>2.43.0</gcp.storage.version>
+        <gcp.pubsub.version>1.150.1</gcp.pubsub.version>
+        <gcp.firestore.version>3.31.9</gcp.firestore.version>
+        <gcp.vision.version>3.40.0</gcp.vision.version>
+        <gcp.translate.version>2.42.0</gcp.translate.version>
+        <gcp.compute.version>1.58.0</gcp.compute.version>
+        <gson.version>2.14.0</gson.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>com.google.cloud</groupId>
+                <artifactId>libraries-bom</artifactId>
+                <version>26.65.0</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+</project>
