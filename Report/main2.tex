@@ -1,0 +1,152 @@
+% =====================================================================
+%  CN2026Labels - Relatorio final (esqueleto)
+%  Preencher cada seccao. Total entre 10 e 15 paginas.
+% =====================================================================
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[portuguese]{babel}
+\usepackage[a4paper,margin=2.3cm]{geometry}
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{tikz}
+\usepackage{hyperref}
+
+\hypersetup{colorlinks=true,linkcolor=black,urlcolor=blue!60!black}
+
+\title{\textbf{CN2026Labels} \\[2pt]
+       \large Sistema el\'astico de dete\c{c}\~ao e tradu\c{c}\~ao de
+       caracter\'isticas em imagens sobre Google Cloud Platform}
+\author{Grupo G06 \\
+        Instituto Superior de Engenharia de Lisboa \\
+        LEIRT / LEIC / LEIM --- Computa\c{c}\~ao na Nuvem, ver\~ao 2025/2026}
+\date{Maio de 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+% TODO: resumo de 5--10 linhas: o que o sistema faz, os servicos
+%       GCP utilizados e as tres propriedades de alto nivel
+%       (desacoplamento, elasticidade, simplicidade).
+\end{abstract}
+
+\tableofcontents
+\vspace{1em}
+
+% =====================================================================
+\section{Introdu\c{c}\~ao e objetivos}
+\label{sec:objetivos}
+% TODO: reformular os objetivos do enunciado por palavras proprias.
+%       Identificar os grupos SF e SG.
+
+% =====================================================================
+\section{Arquitetura}
+\label{sec:arquitetura}
+% TODO: incluir o diagrama de arquitetura (TikZ ou PNG).
+\begin{figure}[h]\centering
+% \includegraphics[width=0.9\linewidth]{arquitetura.png}
+\caption{Arquitetura do sistema CN2026Labels (Figura~1 do enunciado).}
+\label{fig:arch}
+\end{figure}
+
+\subsection{Componentes e responsabilidades}
+% TODO: um paragrafo (ou linha de tabela) por componente:
+%       Cloud Function de lookup, servidor gRPC (MIG), Pub/Sub,
+%       Labels-App (MIG), Cloud Function de logging, Cloud Storage,
+%       Firestore.
+
+\subsection{Decis\~ao: dois servi\c{c}os gRPC no mesmo processo}
+% TODO: separacao SF/SG, diferentes permissoes (IAM), um binario.
+
+% =====================================================================
+\section{Contrato protobuf}
+\label{sec:contrato}
+% TODO: incluir extrato do .proto e justificar:
+%       client streaming na submissao, sub-mensagem LabelEntry,
+%       int64 epoch ms em vez de Timestamp, Empty para GetStatus,
+%       LabelResult unica para pendente e concluido.
+
+% =====================================================================
+\section{Fluxo de opera\c{c}\~oes}
+\label{sec:fluxo}
+% TODO: lista numerada (1, 2, 3.1, 3.2, 4.0, 4.1, 4.2, 5, 6, 7, 8)
+%       espelhando a Figura~\ref{fig:arch}. Realcar o que e
+%       sincrono e o que e assincrono.
+
+% =====================================================================
+\section{Formatos de dados e mensagens}
+\label{sec:dados}
+
+\subsection{Mensagem Pub/Sub}
+% TODO: payload JSON + atributos.
+
+\subsection{Documento Firestore}
+% TODO: tabela com campo / tipo / escrito por / notas.
+
+\subsection{Justifica\c{c}\~ao do \texttt{labelsIndex} desnormalizado}
+% TODO: limite array_contains, sensibilidade a caixa, compromisso.
+
+% =====================================================================
+\section{Aspetos relevantes da implementa\c{c}\~ao}
+\label{sec:impl}
+% TODO: identificacao do pedido, stream da imagem, padrao work-queue,
+%       reutilizacao dos clientes Google, configuracao por metadados,
+%       elasticidade efetiva via ScaleService, lookup das instancias.
+
+% =====================================================================
+\section{Pressupostos assumidos}
+\label{sec:pressupostos}
+% TODO: papeis da conta de servico, gRPC em texto simples,
+%       imagem apenas no Storage, requestId UUID, RUNNING-only
+%       no lookup, semantica do zero em datas, filename so no
+%       primeiro chunk.
+
+% =====================================================================
+\section{Compara\c{c}\~ao com decis\~oes alternativas}
+\label{sec:alternativas}
+% TODO: tabela com Decisao / Escolhida / Alternativa / Razao.
+
+% =====================================================================
+\section{Pontos de falha}
+\label{sec:falhas}
+% TODO: tabela cobrindo quota da Vision, falha do worker,
+%       falha pontual do Translate, falha do blob, VM ainda nao a
+%       aceitar ligacoes, entrega duplicada do Pub/Sub,
+%       consistencia eventual do Firestore, esmagamento do MIG.
+
+% =====================================================================
+\section{S\'intese do procedimento de \emph{deployment}}
+\label{sec:deploy}
+% TODO: scripts 00..99 e uma linha por cada.
+
+% =====================================================================
+\section{Objetivos atingidos e n\~ao atingidos}
+\label{sec:resultados}
+% TODO: lista de pontos atingidos (parte A: submissao em stream,
+%       consulta por id, consulta por label/data, download opcional;
+%       parte B: scale-up/down dos dois MIG); lista do que foi
+%       deixado de fora deliberadamente (TLS, autoscaling).
+
+% =====================================================================
+\section{Conclus\~ao}
+\label{sec:conclusao}
+% TODO: paragrafo final -- recapitulacao das escolhas que tornaram o
+%       sistema elastico e resiliente, e os dois proximos passos
+%       (TLS, autoscaling).
+
+% =====================================================================
+\begin{thebibliography}{9}
+\bibitem{enunciado} \emph{Computa\c{c}\~ao na Nuvem -- Trabalho final}, ISEL, v1.0, 4 de maio de 2026.
+\bibitem{vision}    \url{https://cloud.google.com/vision/docs/labels}
+\bibitem{translate} \url{https://github.com/googleapis/google-cloud-java}
+\bibitem{grpc}      \url{https://grpc.io/docs/languages/java/}
+\bibitem{mig}       \url{https://cloud.google.com/compute/docs/instance-groups}
+\end{thebibliography}
+
+\end{document}

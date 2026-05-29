@@ -1,0 +1,673 @@
+% =====================================================================
+%  CN2026Labels - Relatorio final
+%  ISEL / LEIRT / LEIC / LEIM - Computacao na Nuvem - verao 2025/2026
+%  Grupo G06
+% =====================================================================
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[portuguese]{babel}
+\usepackage[a4paper,margin=2.3cm]{geometry}
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{tikz}
+\usepackage{caption}
+\usepackage{hyperref}
+
+\usetikzlibrary{positioning,arrows.meta,fit,backgrounds,shapes.geometric}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=black,
+  urlcolor=blue!60!black,
+  citecolor=black
+}
+
+% ---- Estilo de listagens (usadas com parcimonia) ---------------------
+\definecolor{lstbg}{HTML}{F7F7F7}
+\definecolor{lstkw}{HTML}{1F4E79}
+\definecolor{lstcm}{HTML}{6A8759}
+\lstdefinelanguage{proto}{
+  morekeywords={syntax,package,option,service,rpc,returns,stream,repeated,message,import,bool,int32,int64,float,string,bytes},
+  sensitive=true,
+  morecomment=[l]{//},
+  morestring=[b]"
+}
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  backgroundcolor=\color{lstbg},
+  keywordstyle=\color{lstkw}\bfseries,
+  commentstyle=\color{lstcm}\itshape,
+  stringstyle=\color{lstkw},
+  showstringspaces=false,
+  breaklines=true,
+  frame=single,
+  rulecolor=\color{black!15},
+  framerule=0.3pt,
+  xleftmargin=0.4em,
+  xrightmargin=0.4em,
+  aboveskip=0.8em,
+  belowskip=0.8em
+}
+
+\title{\textbf{CN2026Labels} \\[2pt]
+       \large Sistema el\'astico de dete\c{c}\~ao e tradu\c{c}\~ao de
+       caracter\'isticas em imagens sobre Google Cloud Platform}
+\author{Grupo G06 \\
+        Instituto Superior de Engenharia de Lisboa \\
+        LEIRT / LEIC / LEIM --- Computa\c{c}\~ao na Nuvem, ver\~ao 2025/2026}
+\date{Maio de 2026}
+
+% =====================================================================
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+O \emph{CN2026Labels} \'e um sistema distribu\'ido que recebe ficheiros de
+imagem submetidos por aplica\c{c}\~oes cliente, deteta as suas
+caracter\'isticas (\emph{labels}) atrav\'es da Vision API, traduz essas
+caracter\'isticas de ingl\^es para portugu\^es atrav\'es da Translation API e
+guarda toda a informa\c{c}\~ao relevante no Firestore para consulta
+posterior. O sistema integra sete servi\c{c}os da Google Cloud Platform
+(Compute Engine, Cloud Run Functions, Cloud Storage, Pub/Sub, Firestore,
+Vision API e Translation API) e foi desenhado em torno de tr\^es
+objetivos n\~ao-funcionais: \textbf{desacoplamento} (o servidor gRPC
+nunca espera pelas APIs de Vis\~ao/Tradu\c{c}\~ao), \textbf{elasticidade}
+(o grupo de servidores gRPC e o grupo de \emph{workers} s\~ao
+redimensionados em tempo de execu\c{c}\~ao atrav\'es de um servi\c{c}o gRPC
+dedicado) e \textbf{simplicidade} (uma s\'o aplica\c{c}\~ao cliente cobre as
+opera\c{c}\~oes funcionais e de gest\~ao).
+Este relat\'orio descreve a arquitetura, os contratos entre componentes,
+os formatos de dados, as decis\~oes de implementa\c{c}\~ao, os pontos de
+falha considerados e os objetivos atingidos.
+\end{abstract}
+
+\tableofcontents
+\vspace{1em}
+
+% =====================================================================
+\section{Introdu\c{c}\~ao e objetivos}
+\label{sec:objetivos}
+
+O enunciado pede um sistema que: (i)~aceite a submiss\~ao de uma imagem
+por uma aplica\c{c}\~ao cliente atrav\'es de gRPC; (ii)~guarde a imagem como
+\emph{blob} no Cloud Storage; (iii)~delegue o processamento a um grupo
+de \emph{workers} que interagem com a Vision API (dete\c{c}\~ao de
+caracter\'isticas) e com a Translation API (tradu\c{c}\~ao das mesmas para
+portugu\^es); (iv)~persista o resultado no Firestore para consulta
+posterior pelo cliente; e (v)~permita ao operador aumentar ou diminuir
+dinamicamente quer o n\'umero de servidores gRPC quer o n\'umero de
+\emph{workers}.
+
+As funcionalidades est\~ao divididas, no enunciado, em dois grupos:
+\textbf{SF} para opera\c{c}\~oes funcionais (submiss\~ao e consulta) e
+\textbf{SG} para opera\c{c}\~oes de gest\~ao da elasticidade. Os dois grupos
+correspondem, na nossa solu\c{c}\~ao, a dois servi\c{c}os gRPC distintos
+(\texttt{LabelsService} e \texttt{ScaleService}) hospedados no mesmo
+processo e expostos pelo mesmo \emph{endpoint}.
+
+% =====================================================================
+\section{Arquitetura}
+\label{sec:arquitetura}
+
+A Figura~\ref{fig:arch} reproduz a arquitetura do enunciado (Figura~1).
+Os n\'umeros entre par\^enteses correspondem \`a sequ\^encia de
+intera\c{c}\~oes detalhada em \S\ref{sec:fluxo}.
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[
+  font=\sffamily\small,
+  node distance=8mm and 11mm,
+  comp/.style={draw,rounded corners=2pt,minimum width=18mm,minimum height=9mm,
+               align=center,fill=blue!5},
+  store/.style={draw,rounded corners=2pt,minimum width=18mm,minimum height=9mm,
+                align=center,fill=orange!10},
+  api/.style={draw,rounded corners=2pt,minimum width=14mm,minimum height=7mm,
+              align=center,fill=green!10},
+  fn/.style={draw,dashed,rounded corners=2pt,minimum width=18mm,minimum height=9mm,
+             align=center,fill=yellow!15},
+  >={Latex[length=1.6mm]},
+  every edge/.style={draw,thick,->}
+]
+
+\node[comp] (client) {Aplica\c{c}\~ao\\cliente};
+
+\node[fn, right=18mm of client] (lookup) {Cloud Function\\(HTTP)};
+
+\node[comp, right=24mm of lookup, minimum height=20mm] (grpc) {Servidor\\gRPC\\\textbf{MIG}};
+
+\node[store, above right=2mm and 18mm of grpc] (gcs) {Cloud\\Storage};
+\node[store, below right=2mm and 18mm of grpc] (ps)  {Pub/Sub};
+
+\node[comp, right=26mm of ps, minimum height=20mm] (lapp) {Labels\\App\\\textbf{MIG}};
+
+\node[api, above=11mm of lapp,xshift=-4mm] (vis) {Vision\\API};
+\node[api, above=11mm of lapp,xshift=18mm] (tr)  {Translate\\API};
+
+\node[store, below=18mm of lapp] (fs) {Firestore};
+
+\node[fn, left=10mm of fs] (cflog) {Cloud Function\\(Pub/Sub)};
+
+% setas do lookup
+\draw (client) edge node[above,sloped]{\scriptsize 1} (lookup);
+\draw (lookup) edge node[above]{\scriptsize 2 lista IPs} (grpc);
+
+% client <-> grpc
+\draw (client.south) .. controls +(0,-12mm) and +(0,-20mm) ..
+  node[below,sloped,pos=0.55]{\scriptsize gRPC SF + SG} (grpc.south);
+
+% grpc -> gcs / ps
+\draw (grpc.north east) edge node[above,sloped]{\scriptsize 3.1 blob} (gcs.west);
+\draw (grpc.south east) edge node[below,sloped]{\scriptsize 3.2 publica} (ps.west);
+
+% ps -> workers / logger
+\draw (ps.east) edge node[above,sloped]{\scriptsize 4.1 \emph{pull}} (lapp.west);
+\draw (ps.south) edge node[left]{\scriptsize 4.0 (opc.)} (cflog.north);
+\draw (cflog) edge node[above]{\scriptsize 5} (fs);
+
+% worker -> gcs
+\draw (lapp.north west) edge node[above,sloped]{\scriptsize 4.2 l\^e} (gcs.east);
+
+% worker -> APIs
+\draw (lapp.north) edge node[right]{\scriptsize 6} (vis);
+\draw (lapp.north) edge[bend right=8] node[right]{\scriptsize 6} (tr);
+
+% worker -> firestore
+\draw (lapp.south) edge node[right]{\scriptsize 7 escreve} (fs);
+
+% grpc -> firestore (Get/Query)
+\draw (grpc.south) .. controls +(0,-26mm) and +(0,-26mm) ..
+   node[below,sloped,pos=0.5]{\scriptsize 8 Get/Query} (fs.west);
+
+\end{tikzpicture}
+\caption{Arquitetura do sistema CN2026Labels. Caixas s\'olidas s\~ao
+processos de longa dura\c{c}\~ao, caixas tracejadas s\~ao fun\c{c}\~oes
+\emph{serverless}, caixas a laranja s\~ao servi\c{c}os geridos de
+armazenamento.}
+\label{fig:arch}
+\end{figure}
+
+\subsection{Componentes e responsabilidades}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}p{36mm}p{40mm}p{70mm}@{}}
+\toprule
+Componente & Tecnologia & Responsabilidade \\
+\midrule
+Cloud Function de \emph{lookup}    & Cloud Run Functions (HTTP), Node 20 + Compute SDK & Devolve os IPs externos das VMs em estado \texttt{RUNNING} do MIG dos servidores gRPC. \\
+Servidor gRPC                      & Compute Engine MIG (Debian~12, OpenJDK~17, gRPC~1.79) & Aloja \texttt{LabelsService} e \texttt{ScaleService}; recebe o \emph{stream} da imagem; escreve o \emph{blob} no Storage; publica a tarefa no Pub/Sub; consulta o Firestore. \\
+Pub/Sub                            & t\'opico \texttt{labels-tasks}, subscri\c{c}\~ao partilhada \texttt{labels-tasks-sub} & Desacopla o servidor gRPC dos \emph{workers} (\emph{work-queue pattern}). \\
+Labels App                         & Compute Engine MIG (OpenJDK~17) & Recebe a mensagem, l\^e o \emph{blob}, invoca a Vision API e a Translation API e escreve no Firestore. \\
+Cloud Function de \emph{logging}   & Cloud Run Functions (Pub/Sub), Node 20 (opcional) & Regista cada pedido recebido na cole\c{c}\~ao \texttt{requests-log}. \\
+Cloud Storage                      & \emph{bucket} \texttt{cn2026-g06-images} & Armazenamento das imagens originais. \\
+Firestore                          & cole\c{c}\~ao \texttt{labels-results} & Metadados finais consultados pelas opera\c{c}\~oes SF. \\
+\bottomrule
+\end{tabular}
+\caption{Componentes e servi\c{c}o GCP que os aloja.}
+\end{table}
+
+\subsection{Decis\~ao: dois servi\c{c}os gRPC no mesmo processo}
+SF e SG t\^em tempos de vida muito diferentes (um \'e por pedido, o outro
+\'e ao n\'ivel do operador) e requerem permiss\~oes diferentes (SG invoca a
+Compute Engine API para redimensionar MIGs). Manter dois servi\c{c}os
+distintos no contrato torna a separa\c{c}\~ao expl\'icita; mant\^e-los no
+mesmo processo simplifica a opera\c{c}\~ao (um \'unico MIG, uma \'unica porta
+TCP, um \'unico bin\'ario).
+
+% =====================================================================
+\section{Contrato protobuf}
+\label{sec:contrato}
+
+O contrato encontra-se em
+\texttt{grpcContract/src/main/proto/CN2026Labels.proto}. Apresenta-se em
+baixo um extrato com as opera\c{c}\~oes e as mensagens centrais.
+
+\begin{lstlisting}[language=proto]
+service LabelsService {                                          // SF
+  rpc SubmitImage  (stream ImageChunk) returns (SubmitResponse);
+  rpc GetResult    (RequestId)         returns (LabelResult);
+  rpc QueryByLabel (LabelDateRange)    returns (FileNames);
+  rpc DownloadImage(RequestId)         returns (stream ImageChunk);
+}
+service ScaleService {                                           // SG
+  rpc ScaleGrpcServers(ScaleRequest)         returns (ScaleResponse);
+  rpc ScaleLabelsApp  (ScaleRequest)         returns (ScaleResponse);
+  rpc GetStatus       (google.protobuf.Empty) returns (StatusResponse);
+}
+message ImageChunk     { string filename = 1; bytes content = 2; }
+message LabelEntry     { string label_en = 1; string label_pt = 2; float score = 3; }
+message LabelResult    { string request_id = 1; string filename = 2;
+                        int64  processed_at = 3;
+                        repeated LabelEntry labels = 4; bool completed = 5; }
+message LabelDateRange { string label = 1;
+                        int64 start_epoch_millis = 2;
+                        int64 end_epoch_millis   = 3; }
+\end{lstlisting}
+
+\textbf{Decis\~oes de desenho e respetiva justifica\c{c}\~ao.}
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
+  \item \textbf{\texttt{SubmitImage} usa \emph{client streaming}.} O
+        cliente fragmenta a imagem em blocos de 64\,KiB; o servidor
+        encaminha cada bloco diretamente para um \texttt{WriteChannel}
+        do Cloud Storage, sem manter a imagem inteira em mem\'oria.
+        \'E o mesmo padr\~ao usado pelo SDK oficial de Storage para
+        \emph{resumable uploads} e suporta ficheiros de v\'arios megabytes
+        sem inflacionar a mem\'oria do servidor.
+  \item \textbf{\texttt{DownloadImage} usa \emph{server streaming}}
+        pela mesma raz\~ao, mas no sentido inverso.
+  \item \textbf{\texttt{LabelEntry} como sub-mensagem (e n\~ao tr\^es
+        \emph{arrays} paralelos).} Tr\^es arrays paralelos
+        (\texttt{label\_en[]}, \texttt{label\_pt[]}, \texttt{score[]})
+        seriam ligeiramente mais compactos, mas exporiam o protocolo a
+        problemas de des-ordena\c{c}\~ao. A sub-mensagem autoexplicativa
+        elimina essa classe de erro.
+  \item \textbf{\texttt{int64} em milissegundos (\emph{epoch}) em vez
+        de \texttt{google.protobuf.Timestamp}.} Em
+        \texttt{LabelDateRange} usamos diretamente \texttt{int64} para
+        evitar a depend\^encia em \texttt{timestamp.proto} e simplificar
+        o parsing no cliente.
+  \item \textbf{\texttt{google.protobuf.Empty} como entrada de
+        \texttt{GetStatus}.} Sinaliza ``sem par\^ametros'' sem introduzir
+        uma mensagem-marcador adicional.
+  \item \textbf{\texttt{LabelResult} \'unica para resultado pendente
+        \emph{e} conclu\'ido.} O campo \texttt{completed=false}
+        representa o estado em curso, dispensando uma RPC adicional do
+        tipo ``j\'a terminou?''. O cliente pode fazer \emph{polling}
+        utilizando a mesma opera\c{c}\~ao.
+\end{itemize}
+
+% =====================================================================
+\section{Fluxo de opera\c{c}\~oes}
+\label{sec:fluxo}
+
+A numera\c{c}\~ao acompanha a da Figura~\ref{fig:arch}.
+
+\begin{enumerate}[leftmargin=1.6em,itemsep=2pt]
+  \item A aplica\c{c}\~ao cliente invoca a Cloud Function de \emph{lookup}
+        por HTTPS.
+  \item A fun\c{c}\~ao interroga a Compute Engine API pela lista de VMs
+        do MIG dos servidores gRPC e devolve um JSON com
+        \texttt{\{"servers":[\{"name","ip","port"\}, ...]\}}.
+        O cliente seleciona um IP, abre um canal gRPC e apresenta o
+        menu de opera\c{c}\~oes. Em caso de falha de liga\c{c}\~ao tenta um IP
+        alternativo ou repete o \emph{lookup} (op\c{c}\~ao~8 do menu).
+  \item[3.1] O cliente envia o \emph{stream} de \texttt{ImageChunk}.
+        O servidor gera um identificador \texttt{requestId} (UUID),
+        escreve os blocos como \emph{blob} de nome igual ao
+        \texttt{requestId} e devolve esse identificador.
+  \item[3.2] O servidor publica em \texttt{labels-tasks} a mensagem JSON
+        \texttt{\{requestId, bucket, blob, filename\}}.
+  \item[4.0/5] A Cloud Function opcional acionada por Pub/Sub regista
+        o pedido em \texttt{requests-log}.
+  \item[4.1] Um dos \emph{workers} do MIG recebe a mensagem na
+        subscri\c{c}\~ao partilhada. O padr\~ao \emph{work-queue} garante
+        que cada mensagem \'e processada por, no m\'aximo, um
+        \emph{worker} de cada vez.
+  \item[4.2/6] O \emph{worker} passa o URI \texttt{gs://\dots} \`a Vision
+        API (caracter\'istica \texttt{LABEL\_DETECTION}) e em seguida
+        traduz cada \emph{label} de ingl\^es para portugu\^es atrav\'es da
+        Translation API.
+  \item[7] O \emph{worker} faz \texttt{set(\dots, MERGE)} sobre
+        \texttt{labels-results/\{requestId\}}, atualizando o estado para
+        \texttt{DONE} e juntando as \emph{labels}, as pontua\c{c}\~oes e o
+        \texttt{labelsIndex} (descrito em \S\ref{sec:dados}).
+  \item[8] Em qualquer momento, o cliente chama \texttt{GetResult} ou
+        \texttt{QueryByLabel}; o servidor gRPC consulta o Firestore e
+        devolve a resposta.
+\end{enumerate}
+
+% =====================================================================
+\section{Formatos de dados e mensagens}
+\label{sec:dados}
+
+\subsection{Mensagem Pub/Sub}
+O corpo \'e JSON em UTF-8; os atributos transportam ainda o
+\texttt{requestId} para que filtros (logger, monitoriza\c{c}\~ao) consigam
+l\^e-lo sem desserializar o corpo:
+
+\begin{lstlisting}[language={}]
+data: { "requestId":"9b9c...", "bucket":"cn2026-g06-images",
+        "blob":"9b9c...", "filename":"gato.jpg" }
+attr: { "requestId":"9b9c..." }
+\end{lstlisting}
+
+\subsection{Documento Firestore}
+Cole\c{c}\~ao \texttt{labels-results}, identificador do documento igual ao
+\texttt{requestId}:
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}p{28mm}p{18mm}p{20mm}p{78mm}@{}}
+\toprule
+Campo          & Tipo      & Escrito por & Notas \\
+\midrule
+\texttt{requestId}    & string    & servidor & duplica o ID do documento; \'util em consultas no cliente. \\
+\texttt{filename}     & string    & servidor & nome do ficheiro fornecido pelo cliente. \\
+\texttt{bucket/blob}  & string    & servidor & necess\'arios para \texttt{DownloadImage}. \\
+\texttt{submittedAt}  & Timestamp & servidor & \texttt{FieldValue.serverTimestamp()}. \\
+\texttt{processedAt}  & Timestamp & \emph{worker} & fixado quando o estado passa a \texttt{DONE}. \\
+\texttt{status}       & string    & ambos    & \texttt{PENDING}~$\rightarrow$~\texttt{DONE}. \\
+\texttt{labels}       & array     & \emph{worker} & \texttt{[\{labelEn,labelPt,score\}, \dots]}. \\
+\texttt{labelsIndex}  & array     & \emph{worker} & lista plana, em min\'usculas, de todas as \emph{labels} (EN e PT). \\
+\bottomrule
+\end{tabular}
+\caption{Esquema da cole\c{c}\~ao \texttt{labels-results}.}
+\end{table}
+
+\subsection{Justifica\c{c}\~ao do \texttt{labelsIndex} desnormalizado}
+O Firestore admite, no m\'aximo, uma cl\'ausula \texttt{array\_contains}
+por consulta e \'e sens\'ivel \`a caixa. Manter um \emph{array} adicional
+em min\'usculas com todas as \emph{labels} (EN \emph{e} PT) permite que
+\texttt{QueryByLabel} responda a \texttt{"Cat"}, \texttt{"cat"} ou
+\texttt{"gato"} com uma \'unica condi\c{c}\~ao indexada. A filtragem
+temporal \'e feita na aplica\c{c}\~ao depois da leitura. O custo \'e
+duplicar uma pequena quantidade de dados por documento, muito abaixo do
+limite de 1\,MiB.
+
+% =====================================================================
+\section{Aspetos relevantes da implementa\c{c}\~ao}
+\label{sec:impl}
+
+\paragraph{Identifica\c{c}\~ao do pedido.}
+O \texttt{requestId} \'e gerado pelo servidor (UUID) e \'e o ponto de
+ancoragem de tudo o que se segue: \emph{nome do blob} no Cloud Storage,
+identificador da mensagem Pub/Sub (em atributo), identificador do
+documento Firestore. A partir do momento em que o cliente o recebe,
+toda a informa\c{c}\~ao relativa ao pedido \'e localiz\'avel sem ambiguidade.
+
+\paragraph{Stream da imagem.}
+O envio em \emph{stream} desde o cliente at\'e ao Cloud Storage \'e
+cont\'inuo: cada bloco recebido em \texttt{onNext()} \'e imediatamente
+escrito no \texttt{WriteChannel}. N\~ao h\'a buffering interm\'edio nem
+escrita para disco no servidor. O mesmo padr\~ao \'e usado, em sentido
+inverso, em \texttt{DownloadImage}.
+
+\paragraph{Padr\~ao \emph{work-queue}.}
+Todos os \emph{workers} subscrevem a mesma subscri\c{c}\~ao Pub/Sub
+(\texttt{labels-tasks-sub}). O Pub/Sub garante entrega \emph{at least
+once} e distribui as mensagens entre os subscritores ligados. A
+confirma\c{c}\~ao (\texttt{ack}) s\'o \'e enviada \emph{depois} da escrita no
+Firestore ter sucesso, garantindo que uma falha do \emph{worker} no
+meio do processamento se traduz em re-entrega da mensagem
+(eventualmente para outro \emph{worker}). Caso a mensagem n\~ao consiga
+ser desserializada, \'e feito \texttt{ack} imediato para evitar
+re-entrega cont\'inua de uma mensagem inv\'alida (\emph{poison message}).
+
+\paragraph{Reutiliza\c{c}\~ao de clientes Google.}
+Os clientes \texttt{ImageAnnotatorClient}, \texttt{Translate} e
+\texttt{Firestore} s\~ao instanciados uma \'unica vez por JVM, n\~ao por
+mensagem. S\~ao thread-safe e mantidas durante todo o ciclo de vida do
+processo, reduzindo dr\'asticamente o custo das primeiras chamadas
+ap\'os o arranque (\emph{warm clients}).
+
+\paragraph{Configura\c{c}\~ao por metadados de inst\^ancia.}
+Tanto o JAR do servidor como o do \emph{worker} l\^eem toda a sua
+configura\c{c}\~ao a partir de vari\'aveis de ambiente (\texttt{CN\_PROJECT\_ID},
+\texttt{CN\_BUCKET}, \texttt{CN\_TOPIC}, \texttt{CN\_SUBSCRIPTION},
+\texttt{CN\_MIG\_GRPC}, \texttt{CN\_MIG\_LABELS}, \dots). O \emph{startup
+script} de cada VM l\^e essas vari\'aveis dos metadados da inst\^ancia,
+populados no momento da cria\c{c}\~ao do \emph{template} via
+\texttt{gcloud compute instance-templates create --metadata=\dots}.
+Resultado: o mesmo JAR \'e usado para qualquer ambiente sem reconstru\c{c}\~ao.
+
+\paragraph{Elasticidade real.}
+O \texttt{ScaleService} \'e a tradu\c{c}\~ao direta de uma chamada \`a Compute
+Engine API:
+\begin{lstlisting}[language=Java]
+client.resizeAsync(projectId, zone, migName, targetSize).get();
+\end{lstlisting}
+Esta linha cobre os dois requisitos da parte~B do enunciado (aumento e
+diminui\c{c}\~ao das duas frotas) sem nenhuma l\'ogica adicional, porque
+as VMs s\~ao \emph{stateless}: ao arrancarem descarregam o JAR de um
+\emph{bucket} de configura\c{c}\~ao e ligam-se imediatamente ao servi\c{c}o.
+
+\paragraph{Lookup das inst\^ancias.}
+A Cloud Function de \emph{lookup} usa o cliente da Compute API
+(\texttt{InstanceGroupManagersClient.listManagedInstances}), filtra
+pelas que se encontram em estado \texttt{RUNNING} e devolve, para cada
+uma, o IP externo extra\'ido do primeiro \texttt{accessConfig}.
+A fun\c{c}\~ao \'e \emph{stateless} e pode ser invocada com a frequ\^encia
+necess\'aria; o cliente repete o \emph{lookup} sempre que perde a liga\c{c}\~ao.
+
+% =====================================================================
+\section{Pressupostos assumidos}
+\label{sec:pressupostos}
+
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
+  \item Cada VM utiliza \textbf{credenciais de aplica\c{c}\~ao por defeito}
+        atrav\'es de uma conta de servi\c{c}o \'unica
+        (\texttt{cn2026-runtime}). Os pap\'eis necess\'arios s\~ao:
+        \texttt{storage.objectAdmin}, \texttt{pubsub.publisher},
+        \texttt{pubsub.subscriber}, \texttt{datastore.user},
+        \texttt{cloudtranslate.user},
+        \texttt{serviceusage.serviceUsageConsumer} e
+        \texttt{compute.instanceAdmin.v1} (este \'ultimo necess\'ario para
+        que o servi\c{c}o SG consiga redimensionar os MIGs).
+  \item O canal gRPC \'e em texto simples (porta 8000). Em produ\c{c}\~ao,
+        TLS seria terminado num \emph{load balancer} HTTPS; o esquema
+        simplificado \'e o usado nos laborat\'orios e \'e suficiente para a
+        demonstra\c{c}\~ao em sala de aula.
+  \item A imagem nunca \'e transportada por Pub/Sub; apenas o nome do
+        \emph{blob}. A Vision API l\^e os bytes diretamente do Storage
+        pelo URI \texttt{gs://\dots}, evitando uma travessia adicional.
+  \item O \texttt{requestId} \'e um UUID gerado pelo servidor.
+        Colis\~oes s\~ao despreziveis e como toda a escrita no Firestore \'e
+        indexada por este identificador, a entrega \emph{at-least-once}
+        do Pub/Sub \'e absorvida sem efeitos colaterais
+        (\emph{idempot\^encia}).
+  \item A Cloud Function de \emph{lookup} devolve apenas inst\^ancias em
+        estado \texttt{RUNNING}. Uma VM rec\'em-criada pode constar na
+        lista alguns segundos antes da sua porta gRPC estar ativa; o
+        cliente trata este caso tentando outro IP ou repetindo o
+        \emph{lookup}.
+  \item Em \texttt{LabelDateRange}, o valor zero em qualquer um dos
+        extremos significa ``sem limite''. \'E uma simplifica\c{c}\~ao
+        deliberada para reduzir o n\'umero de campos opcionais na
+        mensagem.
+  \item Em \texttt{ImageChunk}, o campo \texttt{filename} \'e apenas
+        significativo no primeiro bloco; chunks seguintes deixam-no
+        vazio. Esta conven\c{c}\~ao est\'a documentada no contrato e
+        replicada por cliente e servidor.
+\end{itemize}
+
+% =====================================================================
+\section{Compara\c{c}\~ao com decis\~oes alternativas}
+\label{sec:alternativas}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}p{34mm}p{34mm}p{34mm}p{52mm}@{}}
+\toprule
+Decis\~ao & Escolhida & Alternativa & Raz\~ao da escolha \\
+\midrule
+Transfer\^encia da imagem & \emph{client streaming} gRPC & Uma RPC un\'aria com \emph{bytes} crus &
+mem\'oria limitada no servidor; mesmo padr\~ao do Lab~2. \\
+
+Leitura da imagem no \emph{worker} & URI \texttt{gs://} para a Vision API & \emph{Worker} descarrega os bytes &
+menos uma travessia; a Vision API aceita URIs do Storage nativamente. \\
+
+Consulta de resultados & Servidor gRPC l\^e o Firestore & Cliente l\^e o Firestore diretamente &
+mant\'em as credenciais dentro da infraestrutura. \\
+
+Dimensionamento dos MIG & Manual atrav\'es do servi\c{c}o SG & \emph{Autoscaler} baseado em CPU &
+o enunciado pede demonstra\c{c}\~ao expl\'icita das opera\c{c}\~oes do grupo B. \\
+
+Runtime das Cloud Functions & Node.js 20 & Java &
+arranque a frio mais r\'apido e \'arvore de depend\^encias mais leve. \\
+
+Identificador do pedido & UUID gerado no servidor & Hash do conte\'udo &
+gera\c{c}\~ao em $O(1)$ sem ler bytes; idempot\^encia mantida via chave est\'avel. \\
+
+Pesquisa por \emph{label} & \emph{Array} desnormalizado \texttt{labelsIndex} & \emph{Sub-collection} de \emph{labels} &
+uma s\'o leitura em vez de \emph{collection group query}; satisfaz o requisito. \\
+\bottomrule
+\end{tabular}
+\caption{Decis\~oes de desenho e as alternativas que foram exclu\'idas.}
+\end{table}
+
+% =====================================================================
+\section{Pontos de falha}
+\label{sec:falhas}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}p{40mm}p{36mm}p{76mm}@{}}
+\toprule
+Falha & Dete\c{c}\~ao & Mitiga\c{c}\~ao \\
+\midrule
+Quota da Vision API esgotada & exce\c{c}\~ao em \texttt{batchAnnotateImages} &
+\emph{worker} faz \texttt{nack()}; Pub/Sub retenta com \emph{back-off};
+o n\'umero de \emph{labels} processadas \'e limitado por
+\texttt{CN\_MAX\_LABELS}/\texttt{CN\_MIN\_SCORE} para reduzir o volume. \\
+
+Falha do \emph{worker} a meio de uma mensagem & expira o prazo de
+confirma\c{c}\~ao (\emph{ack-deadline}) & a mensagem \'e reentregue a outro
+\emph{worker} (ou ao mesmo ap\'os reinicio); a escrita no Firestore \'e
+idempotente porque indexada pelo \texttt{requestId}. \\
+
+Falha pontual da Translation API & exce\c{c}\~ao em \texttt{translateLabel} &
+a \emph{label} \'e guardada com \texttt{labelPt $=$ labelEn} e o
+processamento continua, em vez de falhar todo o pedido. \\
+
+Falha na escrita do \emph{blob} & exce\c{c}\~ao em \texttt{onNext} no servidor
+gRPC & o cliente recebe \texttt{onError}; n\~ao h\'a publica\c{c}\~ao no Pub/Sub,
+logo o Firestore mant\'em-se consistente. \\
+
+VM nova ainda n\~ao a aceitar liga\c{c}\~oes & canal gRPC devolve
+\texttt{UNAVAILABLE} & cliente repete o \emph{lookup} (op\c{c}\~ao~8 do
+menu) ou tenta outro IP. \\
+
+Entrega duplicada do Pub/Sub & mesmo \texttt{messageId} processado mais
+do que uma vez & a escrita \'e \texttt{set(\dots, MERGE)} indexada pelo
+\texttt{requestId}; o resultado \'e idempotente. \\
+
+Consist\^encia eventual do Firestore (janela~$<$\,1\,s) & cliente l\^e
+documento ainda em \texttt{PENDING} & \texttt{GetResult} devolve
+\texttt{completed=false}; o cliente faz \emph{polling} at\'e
+\texttt{DONE}. \\
+
+Esmagamento do MIG (limite de quotas) & opera\c{c}\~ao de \texttt{resize}
+falha & a RPC \texttt{ScaleResponse} devolve \texttt{success=false} com
+mensagem leg\'ivel; o operador pode reduzir o pedido. \\
+\bottomrule
+\end{tabular}
+\caption{Cen\'arios de falha antecipados pelo desenho.}
+\end{table}
+
+% =====================================================================
+\section{S\'intese do procedimento de \emph{deployment}}
+\label{sec:deploy}
+
+A pasta \texttt{deploy/} cont\'em um conjunto pequeno e numerado de
+\emph{scripts} \texttt{bash} que automatizam todo o ciclo de vida:
+
+\begin{enumerate}[leftmargin=1.4em,itemsep=2pt]
+  \item \texttt{00-bootstrap.sh} -- ativa as APIs necess\'arias, cria a
+        conta de servi\c{c}o e os seus pap\'eis, os dois \emph{buckets}, o
+        t\'opico e a subscri\c{c}\~ao do Pub/Sub, a base de dados Firestore
+        e a regra de \emph{firewall} para a porta 8000.
+  \item \texttt{10-build-and-upload-jars.sh} -- compila o projeto Maven
+        multi-m\'odulo e copia os tr\^es JARs (\emph{fat jars}) para o
+        \emph{bucket} de configura\c{c}\~ao.
+  \item \texttt{20-create-templates-and-migs.sh} -- cria um
+        \emph{instance template} por componente (passando os par\^ametros
+        de \emph{runtime} como metadados de inst\^ancia) e cria os dois
+        MIG com tamanho inicial igual a um.
+  \item \texttt{30-deploy-functions.sh} -- publica a Cloud Function de
+        \emph{lookup} (HTTP) e a Cloud Function opcional de
+        \emph{logging} (acionada por Pub/Sub).
+  \item \texttt{99-teardown.sh} -- elimina tudo o que foi criado pelos
+        \emph{scripts} anteriores (os \emph{buckets} e o Firestore s\~ao
+        deliberadamente preservados para que as submiss\~oes anteriores
+        sobrevivam entre demonstra\c{c}\~oes).
+\end{enumerate}
+
+Um \'unico ficheiro de configura\c{c}\~ao \texttt{deploy/env.sh} (copiado a
+partir de \texttt{env.sample.sh}) \'e carregado por todos os
+\emph{scripts}, pelo que o grupo apenas define o \emph{project id} e a
+zona uma s\'o vez.
+
+% =====================================================================
+\section{Objetivos atingidos e n\~ao atingidos}
+\label{sec:resultados}
+
+\textbf{Atingidos:}
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
+  \item Submiss\~ao de imagens em \emph{stream} sobre gRPC (parte A do
+        enunciado).
+  \item Consulta dos resultados a partir do identificador do pedido,
+        com data de processamento, \emph{labels} e respetivas tradu\c{c}\~oes
+        (parte A do enunciado).
+  \item Consulta de ficheiros que cont\^em uma determinada \emph{label},
+        entre duas datas (parte A do enunciado).
+  \item \emph{Download} de uma imagem pelo identificador, em \emph{server
+        streaming} (extens\~ao opcional sugerida no enunciado).
+  \item Padr\~ao \emph{work-queue} entre o servidor gRPC e os
+        \emph{workers}, com subscri\c{c}\~ao partilhada.
+  \item Integra\c{c}\~ao da Vision API (dete\c{c}\~ao de \emph{labels}) e da
+        Translation API (EN~$\rightarrow$~PT).
+  \item Cole\c{c}\~ao Firestore com consulta composta
+        (\texttt{whereArrayContains} + filtro temporal aplicacional).
+  \item Cloud Function de \emph{lookup} -- nenhum IP do servidor gRPC
+        est\'a fixado no cliente.
+  \item Aumento e diminui\c{c}\~ao do n\'umero de inst\^ancias dos dois MIG a
+        partir do mesmo menu do cliente (parte B do enunciado).
+  \item Cloud Function opcional de \emph{logging} acionada por Pub/Sub.
+\end{itemize}
+
+\textbf{N\~ao atingidos (deliberadamente):}
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
+  \item Cifragem do canal gRPC (TLS/mTLS). O esquema de texto simples
+        \'e o utilizado nos laborat\'orios e \'e adequado para a
+        demonstra\c{c}\~ao; a transi\c{c}\~ao para TLS resume-se a expor o
+        servi\c{c}o por tr\'as de um \emph{load balancer} HTTPS.
+  \item \emph{Autoscaling} baseado em m\'etricas. O dimensionamento \'e
+        manual, atrav\'es do servi\c{c}o SG, para que a demonstra\c{c}\~ao em
+        sala mostre claramente o controlo do operador.
+\end{itemize}
+
+% =====================================================================
+\section{Conclus\~ao}
+\label{sec:conclusao}
+
+O CN2026Labels integra sete servi\c{c}os GCP num \emph{pipeline}
+desacoplado e horizontalmente escal\'avel. Os dois contratos expl\'icitos
+(SF para o utilizador final, SG para o operador) e o padr\~ao
+\emph{work-queue} no meio mant\^em os componentes independentes: o
+servidor de entrada nunca bloqueia \`a espera da Vision API e o
+\emph{pool} de \emph{workers} pode ser redimensionado com uma s\'o RPC.
+O desenho prioriza a corre\c{c}\~ao sob entrega \emph{at-least-once}
+(identificadores UUID, escritas idempotentes no Firestore) e a
+viabilidade da demonstra\c{c}\~ao (dimensionamento manual, menu
+autoexplicativo) em detrimento de afina\c{c}\~oes operacionais (sem
+\emph{autoscaling}, sem TLS). Ambas as extens\~oes s\~ao localizadas e
+constituem o pr\'oximo passo natural para um \emph{deployment} em
+produ\c{c}\~ao.
+
+% =====================================================================
+\begin{thebibliography}{9}
+\bibitem{enunciado} \emph{Computa\c{c}\~ao na Nuvem -- Trabalho final},
+ISEL/LEIRT/LEIC/LEIM, ver\~ao 2025/2026, v1.0, 4 de maio de 2026.
+\bibitem{vision} Google Cloud Vision -- Detect Labels.
+\url{https://cloud.google.com/vision/docs/labels}
+\bibitem{translate} Google Cloud Translation -- exemplos Java.
+\url{https://github.com/googleapis/google-cloud-java}
+\bibitem{grpc} gRPC Java -- documenta\c{c}\~ao.
+\url{https://grpc.io/docs/languages/java/}
+\bibitem{mig} Managed Instance Groups -- vis\~ao geral.
+\url{https://cloud.google.com/compute/docs/instance-groups}
+\end{thebibliography}
+
+\end{document}
